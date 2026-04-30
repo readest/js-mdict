@@ -123,16 +123,16 @@ export function ripemd128(dataBuffer: ArrayBuffer): Uint8Array {
 
   // 更新哈希
   for (i = 0, t = 0, l = x.length; i < l; i += 16, t = 0) {
-    aa = aaa = hash[0];
-    bb = bbb = hash[1];
-    cc = ccc = hash[2];
-    dd = ddd = hash[3];
+    aa = aaa = hash[0]!;
+    bb = bbb = hash[1]!;
+    cc = ccc = hash[2]!;
+    dd = ddd = hash[3]!;
 
     for (; t < 64; ++t) {
       r = ~~(t / 16);
       aa = rotl(
-        aa + F[r](bb, cc, dd) + x[i + X[r][t % 16]] + K[r],
-        S[r][t % 16]
+        aa + F[r]!(bb, cc, dd) + x[i + X[r]![t % 16]!]! + K[r]!,
+        S[r]![t % 16]!,
       );
 
       tmp = dd;
@@ -146,8 +146,8 @@ export function ripemd128(dataBuffer: ArrayBuffer): Uint8Array {
       r = ~~(t / 16);
       rr = ~~((63 - (t % 64)) / 16);
       aaa = rotl(
-        aaa + F[rr](bbb, ccc, ddd) + x[i + X[r][t % 16]] + K[r],
-        S[r][t % 16]
+        aaa + F[rr]!(bbb, ccc, ddd) + x[i + X[r]![t % 16]!]! + K[r]!,
+        S[r]![t % 16]!,
       );
 
       tmp = ddd;
@@ -157,10 +157,10 @@ export function ripemd128(dataBuffer: ArrayBuffer): Uint8Array {
       aaa = tmp;
     }
 
-    ddd = hash[1] + cc + ddd;
-    hash[1] = hash[2] + dd + aaa;
-    hash[2] = hash[3] + aa + bbb;
-    hash[3] = hash[0] + bb + ccc;
+    ddd = hash[1]! + cc + ddd;
+    hash[1] = hash[2]! + dd + aaa;
+    hash[2] = hash[3]! + aa + bbb;
+    hash[3] = hash[0]! + bb + ccc;
     hash[0] = ddd;
   }
 

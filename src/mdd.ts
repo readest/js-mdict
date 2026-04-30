@@ -1,7 +1,7 @@
-import { Mdict } from './mdict.js';
-import { MDictOptions } from './mdict-base.js';
-import { BlobScanner, Scanner } from './scanner.js';
-import { bytesToBase64 } from './byte-utils.js';
+import { Mdict } from './mdict';
+import { MDictOptions } from './mdict-base';
+import { BlobScanner, Scanner } from './scanner';
+import { bytesToBase64 } from './byte-utils';
 
 type LocateResult = { keyText: string; definition: string | null };
 

@@ -1,7 +1,7 @@
-import lzo1x from './lzo1x-wrapper.js';
-import common, { NumFmt } from './utils.js';
-import type { Scanner } from './scanner.js';
-import { assert, bytesToHex } from './byte-utils.js';
+import lzo1x from './lzo1x-wrapper';
+import common, { NumFmt } from './utils';
+import type { Scanner } from './scanner';
+import { assert, bytesToHex } from './byte-utils';
 import { unzlibSync as inflate } from 'fflate';
 
 // Lazy CJS require so the main entry stays free of `node:fs`. Only resolved
@@ -386,14 +386,15 @@ class MDictBase {
   }
 
   strip(key: string): string {
-    if (this._isStripKey()) {
-      key = key.replace(common.REGEXP_STRIPKEY[this.meta.ext], '$1');
+    const stripRe = common.REGEXP_STRIPKEY[this.meta.ext];
+    if (this._isStripKey() && stripRe) {
+      key = key.replace(stripRe, '$1');
     }
     if (!this._isKeyCaseSensitive()) {
       key = key.toLowerCase();
     }
-    if (this.meta.ext == 'mdd') {
-      key = key.replace(common.REGEXP_STRIPKEY[this.meta.ext], '$1');
+    if (this.meta.ext == 'mdd' && stripRe) {
+      key = key.replace(stripRe, '$1');
       key = key.replace(/_/g, '!');
     }
     return key.toLowerCase().trim();
@@ -574,7 +575,7 @@ class MDictBase {
       const keyText = this.meta.decoder.decode(keyTextBuffer);
 
       if (keyList.length > 0) {
-        keyList[keyList.length - 1].recordEndOffset = meaningOffset;
+        keyList[keyList.length - 1]!.recordEndOffset = meaningOffset;
       }
 
       keyList.push({
@@ -647,16 +648,16 @@ class MDictBase {
     Object.assign(this.header, common.parseHeader(headerText));
 
     // set header default configuration
-    this.header.KeyCaseSensitive = this.header.KeyCaseSensitive || 'No';
-    this.header.StripKey = this.header.StripKey || 'Yes';
+    this.header['KeyCaseSensitive'] = this.header['KeyCaseSensitive'] || 'No';
+    this.header['StripKey'] = this.header['StripKey'] || 'Yes';
 
     // encrypted flag
     // 0x00 - no encryption
     // 0x01 - encrypt record block
     // 0x02 - encrypt key info block
-    if (!this.header.Encrypted || this.header.Encrypted == '' || this.header.Encrypted == 'No') {
+    if (!this.header['Encrypted'] || this.header['Encrypted'] == '' || this.header['Encrypted'] == 'No') {
       this.meta.encrypt = 0;
-    } else if (this.header.Encrypted == 'Yes') {
+    } else if (this.header['Encrypted'] == 'Yes') {
       this.meta.encrypt = 1;
     } else {
       this.meta.encrypt = parseInt(this.header['Encrypted'] as string, 10);
@@ -688,10 +689,10 @@ class MDictBase {
       this.meta.numWidth = 4;
       this.meta.numFmt = common.NUMFMT_UINT32 as NumFmt;
     }
-    if (!this.header.Encoding || this.header.Encoding == '') {
+    if (!this.header['Encoding'] || this.header['Encoding'] == '') {
       this.meta.encoding = UTF8;
       this.meta.decoder = UTF_8_DECODER;
-    } else if (this.header.Encoding == 'GBK' || this.header.Encoding == 'GB2312') {
+    } else if (this.header['Encoding'] == 'GBK' || this.header['Encoding'] == 'GB2312') {
       this.meta.encoding = GB18030;
       this.meta.decoder = GB18030_DECODER;
     } else if ((this.header['Encoding'] as string).toLowerCase() == 'big5') {
@@ -751,7 +752,7 @@ class MDictBase {
         throw Error(' user identification is needed to read encrypted file');
       }
       // regcode, userid = header_info['_passcode']
-      if (this.header.RegisterBy == 'Email') {
+      if (this.header['RegisterBy'] == 'Email') {
         // encrypted_key = _decrypt_regcode_by_email(regcode, userid);
         throw Error('encrypted file not support yet');
       } else {
@@ -1031,16 +1032,16 @@ class MDictBase {
   private _processKeyBlocks(blocks: Uint8Array[]): void {
     let keyBlockList: KeyWordItem[] = [];
     for (let idx = 0; idx < this.keyInfoList.length; idx++) {
-      const unpackSize = this.keyInfoList[idx].keyBlockUnpackSize;
-      const keyBlock = this.unpackKeyBlock(blocks[idx], unpackSize);
+      const unpackSize = this.keyInfoList[idx]!.keyBlockUnpackSize;
+      const keyBlock = this.unpackKeyBlock(blocks[idx]!, unpackSize);
       const splitKeyBlock = this.splitKeyBlock(keyBlock, idx);
-      if (keyBlockList.length > 0 && keyBlockList[keyBlockList.length - 1].recordEndOffset == -1) {
-        keyBlockList[keyBlockList.length - 1].recordEndOffset = splitKeyBlock[0].recordStartOffset;
+      if (keyBlockList.length > 0 && keyBlockList[keyBlockList.length - 1]!.recordEndOffset == -1) {
+        keyBlockList[keyBlockList.length - 1]!.recordEndOffset = splitKeyBlock[0]!.recordStartOffset;
       }
       keyBlockList = keyBlockList.concat(splitKeyBlock);
     }
-    if (keyBlockList[keyBlockList.length - 1].recordEndOffset === -1) {
-      keyBlockList[keyBlockList.length - 1].recordEndOffset = -1;
+    if (keyBlockList[keyBlockList.length - 1]!.recordEndOffset === -1) {
+      keyBlockList[keyBlockList.length - 1]!.recordEndOffset = -1;
     }
     assert(
       keyBlockList.length === this.keyHeader.keywordNum,
@@ -1147,7 +1148,9 @@ class MDictBase {
     this.recordInfoList = recordInfoList;
     // assign latest keyword's endoffset
     if (this.keywordList.length > 0) {
-      this.keywordList[this.keywordList.length - 1].recordEndOffset = this.recordInfoList[this.recordInfoList.length - 1].unpackAccumulatorOffset + this.recordInfoList[this.recordInfoList.length - 1].unpackSize;
+      const lastRec = this.recordInfoList[this.recordInfoList.length - 1]!;
+      this.keywordList[this.keywordList.length - 1]!.recordEndOffset =
+        lastRec.unpackAccumulatorOffset + lastRec.unpackSize;
     }
     this._recordInfoEndOffset = this._recordInfoStartOffset + this.recordHeader.recordInfoCompSize;
     // avoid user not invoke the _decodeRecordBlock method
@@ -1173,8 +1176,9 @@ class MDictBase {
 
     for (let idx = 0; idx < this.recordInfoList.length; idx++) {
       let compressType = 'none';
-      const packSize = this.recordInfoList[idx].packSize;
-      const unpackSize = this.recordInfoList[idx].unpackSize;
+      const recordInfo = this.recordInfoList[idx]!;
+      const packSize = recordInfo.packSize;
+      const unpackSize = recordInfo.unpackSize;
       const rbPackBuff = await this.scanner.readBuffer(recordOffset, packSize);
       recordOffset += packSize;
 
@@ -1228,8 +1232,9 @@ class MDictBase {
       let offset = 0;
       let i = 0;
       while (i < this.keywordList.length) {
-        const recordStart = this.keywordList[i].recordStartOffset;
-        const keyText = this.keywordList[i].keyText;
+        const cur = this.keywordList[i]!;
+        const recordStart = cur.recordStartOffset;
+        const keyText = cur.keyText;
 
         // # reach the end of current record block
         if (recordStart - offset >= recordBlock.length) {
@@ -1238,7 +1243,7 @@ class MDictBase {
         // # record end index
         let recordEnd: number;
         if (i < this.keywordList.length - 1) {
-          recordEnd = this.keywordList[i + 1].recordStartOffset;
+          recordEnd = this.keywordList[i + 1]!.recordStartOffset;
         } else {
           recordEnd = recordBlock.length + offset;
         }

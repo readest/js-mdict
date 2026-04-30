@@ -29,6 +29,12 @@
  */
 
 const lzo1x = function lzo1x() {
+  // Vendored LZO impl — function-prototype style with dynamic `this` typing.
+  // Concrete property types (Uint8Array, etc.) get assigned at runtime in
+  // `compress()` / `decompress()`, but the prototype declares initial-value
+  // sentinels (`null`, `0`). Casting through `any` matches the original
+  // intent and avoids forcing the whole file into a type-strict rewrite.
+  /* eslint-disable @typescript-eslint/no-explicit-any */
   function _lzo1x() {}
 
   _lzo1x.prototype = {
@@ -612,7 +618,7 @@ const lzo1x = function lzo1x() {
       this.state.outputBuffer = this.out.subarray(0, this.op);
       return this.OK;
     },
-  };
+  } as any;
 
   // @ts-expect-error ignore error for now
   const instance = new _lzo1x();

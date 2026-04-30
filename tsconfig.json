@@ -4,6 +4,7 @@
     "esModuleInterop": true,
     "target": "ES6",
     "module": "CommonJS",
+    "moduleResolution": "bundler",
     "strict": true,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": true,

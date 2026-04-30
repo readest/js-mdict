@@ -6,13 +6,14 @@ export type {
   RecordHeader,
   RecordInfo,
   KeyWordItem,
-} from './mdict-base.js';
+} from './mdict-base';
 
-export { Mdict } from './mdict.js';
-export { MDX, FuzzyWord } from './mdx.js';
-export { MDD } from './mdd.js';
+export { Mdict } from './mdict';
+export { MDX } from './mdx';
+export type { FuzzyWord } from './mdx';
+export { MDD } from './mdd';
 
 // Browser-friendly scanner. The Node-only `FileScanner` lives at
 // './file-scanner.js' to keep the main entry free of `node:fs`.
-export { BlobScanner } from './scanner.js';
-export type { Scanner } from './scanner.js';
+export { BlobScanner } from './scanner';
+export type { Scanner } from './scanner';

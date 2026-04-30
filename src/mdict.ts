@@ -15,12 +15,12 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-import MdictBase, { KeyWordItem, KeyInfoItem, MDictOptions } from './mdict-base.js';
-import common from './utils.js';
-import lzo1x from './lzo1x-wrapper.js';
+import MdictBase, { KeyWordItem, KeyInfoItem, MDictOptions } from './mdict-base';
+import common from './utils';
+import lzo1x from './lzo1x-wrapper';
 import { unzlibSync as inflate } from 'fflate';
-import { bytesToHex } from './byte-utils.js';
-import type { Scanner } from './scanner.js';
+import { bytesToHex } from './byte-utils';
+import type { Scanner } from './scanner';
 
 export class Mdict extends MdictBase {
 
@@ -82,7 +82,7 @@ export class Mdict extends MdictBase {
     while (left <= right) {
       mid = left + ((right - left) >> 1);
 
-      const compRes = this.comp(word, list[mid].keyText);
+      const compRes = this.comp(word, list[mid]!.keyText);
       if (compRes > 0) {
         left = mid + 1;
       } else if (compRes == 0) {
@@ -92,7 +92,7 @@ export class Mdict extends MdictBase {
       }
     }
 
-    if (this.comp(word, list[mid].keyText) != 0) {
+    if (!list[mid] || this.comp(word, list[mid]!.keyText) != 0) {
       if (!isAssociate) {
         return undefined;
       }
@@ -123,6 +123,9 @@ export class Mdict extends MdictBase {
   lookupRecordByKeyBlock(item: KeyWordItem): Uint8Array | Promise<Uint8Array> {
     const recordBlockIndex = this.reduceRecordBlockInfo(item.recordStartOffset);
     const recordBlockInfo = this.recordInfoList[recordBlockIndex];
+    if (!recordBlockInfo) {
+      throw new Error(`recordBlockInfo[${recordBlockIndex}] is missing`);
+    }
     const offset = this._recordBlockStartOffset + recordBlockInfo.packAccumulateOffset;
     const start = item.recordStartOffset - recordBlockInfo.unpackAccumulatorOffset;
     const end = item.recordEndOffset - recordBlockInfo.unpackAccumulatorOffset;
@@ -144,9 +147,13 @@ export class Mdict extends MdictBase {
    */
   lookupPartialKeyBlockListByKeyInfoId(keyInfoId: number): KeyWordItem[];
   lookupPartialKeyBlockListByKeyInfoId(keyInfoId: number): KeyWordItem[] | Promise<KeyWordItem[]> {
-    const packSize = this.keyInfoList[keyInfoId].keyBlockPackSize;
-    const unpackSize = this.keyInfoList[keyInfoId].keyBlockUnpackSize;
-    const startOffset = this.keyInfoList[keyInfoId].keyBlockPackAccumulator + this._keyBlockStartOffset;
+    const keyInfo = this.keyInfoList[keyInfoId];
+    if (!keyInfo) {
+      throw new Error(`keyInfoList[${keyInfoId}] is missing`);
+    }
+    const packSize = keyInfo.keyBlockPackSize;
+    const unpackSize = keyInfo.keyBlockUnpackSize;
+    const startOffset = keyInfo.keyBlockPackAccumulator + this._keyBlockStartOffset;
     const finish = (keyBlockPackedBuff: Uint8Array): KeyWordItem[] => {
       const keyBlock = this.unpackKeyBlock(keyBlockPackedBuff, unpackSize);
       return this.splitKeyBlock(keyBlock, keyInfoId);
@@ -172,10 +179,11 @@ export class Mdict extends MdictBase {
     // so we compare with the greater symbol is wrong, we need to use the `common.wordCompare` function
     while (left <= right) {
       mid = left + ((right - left) >> 1);
-      if (this.comp(word, list[mid].firstKey) >= 0 &&
-        this.comp(word, list[mid].lastKey) <= 0) {
+      const item = list[mid]!;
+      if (this.comp(word, item.firstKey) >= 0 &&
+        this.comp(word, item.lastKey) <= 0) {
         return mid;
-      } else if (this.comp(word, list[mid].lastKey) >= 0) {
+      } else if (this.comp(word, item.lastKey) >= 0) {
         left = mid + 1;
       } else {
         right = mid - 1;
@@ -230,7 +238,7 @@ export class Mdict extends MdictBase {
     let mid = 0;
     while (left <= right) {
       mid = left + ((right - left) >> 1);
-      if (recordStart >= this.recordInfoList[mid].unpackAccumulatorOffset) {
+      if (recordStart >= this.recordInfoList[mid]!.unpackAccumulatorOffset) {
         left = mid + 1;
       } else {
         right = mid - 1;

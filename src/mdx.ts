@@ -1,7 +1,7 @@
-import { Mdict } from './mdict.js';
-import { KeyWordItem, MDictOptions } from './mdict-base.js';
-import { BlobScanner, Scanner } from './scanner.js';
-import common from './utils.js';
+import { Mdict } from './mdict';
+import { KeyWordItem, MDictOptions } from './mdict-base';
+import { BlobScanner, Scanner } from './scanner';
+import common from './utils';
 
 export interface FuzzyWord extends KeyWordItem {
   recordStartOffset: number;

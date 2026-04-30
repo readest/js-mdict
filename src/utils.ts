@@ -1,5 +1,5 @@
-import { ripemd128 } from './ripemd128.js';
-import { concatBytes } from './byte-utils.js';
+import { ripemd128 } from './ripemd128';
+import { concatBytes } from './byte-utils';
 
 const REGEXP_STRIPKEY: { [key: string]: RegExp } = {
   mdx: /[().,\-&、 '/\\@_$\\!]()/g,
@@ -66,26 +66,26 @@ function levenshteinDistance(a: string, b: string): number {
   );
 
   for (let i = 0; i <= m; i++) {
-    dp[i][0] = i;
+    dp[i]![0] = i;
   }
   for (let j = 0; j <= n; j++) {
-    dp[0][j] = j;
+    dp[0]![j] = j;
   }
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
       if (a[i - 1] !== b[j - 1]) {
-        dp[i][j] = triple_min(
-          1 + dp[i - 1][j],
-          1 + dp[i][j - 1],
-          1 + dp[i - 1][j - 1]
+        dp[i]![j] = triple_min(
+          1 + dp[i - 1]![j]!,
+          1 + dp[i]![j - 1]!,
+          1 + dp[i - 1]![j - 1]!,
         );
       } else {
-        dp[i][j] = dp[i - 1][j - 1];
+        dp[i]![j] = dp[i - 1]![j - 1]!;
       }
     }
   }
-  return dp[m][n];
+  return dp[m]![n]!;
 }
 
 /**
@@ -99,7 +99,7 @@ function parseHeader(header_text: string): {
   const headerAttr: { [key: string]: string | { [key: string]: string[] } } =
     {};
   Array.from(header_text.matchAll(/(\w+)="((.|\r|\n)*?)"/g)).forEach((tag) => {
-    headerAttr[tag[1]] = unescapeEntities(tag[2]);
+    headerAttr[tag[1]!] = unescapeEntities(tag[2]!);
   });
   // stylesheet attribute if present takes form of:
   //   style_number # 1-255
@@ -111,7 +111,7 @@ function parseHeader(header_text: string): {
     const styleSheet: { [key: string]: string[] } = {};
     const lines = headerAttr['StyleSheet'].split(/[\r\n]+/g);
     for (let i = 0; i < lines.length; i += 3) {
-      styleSheet[lines[i]] = [lines[i + 1], lines[i + 2]];
+      styleSheet[lines[i]!] = [lines[i + 1]!, lines[i + 2]!];
     }
 
     headerAttr['StyleSheet'] = styleSheet;
@@ -125,7 +125,7 @@ function parseHeader(header_text: string): {
  * @returns {number} 转换后的无符号 8 位整数。
  */
 function uint8BEtoNumber(bytes: Uint8Array): number {
-  return bytes[0] & 0xff;
+  return bytes[0]! & 0xff;
 }
 
 /**
@@ -136,10 +136,10 @@ function uint8BEtoNumber(bytes: Uint8Array): number {
 function uint16BEtoNumber(bytes: Uint8Array): number {
   let n = 0;
   for (let i = 0; i < 1; i++) {
-    n |= bytes[i];
+    n |= bytes[i]!;
     n <<= 8;
   }
-  n |= bytes[1];
+  n |= bytes[1]!;
   return n;
 }
 
@@ -151,10 +151,10 @@ function uint16BEtoNumber(bytes: Uint8Array): number {
 function uint32BEtoNumber(bytes: Uint8Array): number {
   let n = 0;
   for (let i = 0; i < 3; i++) {
-    n |= bytes[i];
+    n |= bytes[i]!;
     n <<= 8;
   }
-  n |= bytes[3];
+  n |= bytes[3]!;
   return n;
 }
 
@@ -165,20 +165,20 @@ function uint32BEtoNumber(bytes: Uint8Array): number {
  * @throws {Error} 如果数值超过 JavaScript 的安全整数范围。
  */
 function uint64BEtoNumber(bytes: Uint8Array): number {
-  if (bytes[1] >= 0x20 || bytes[0] > 0) {
+  if (bytes[1]! >= 0x20 || bytes[0]! > 0) {
     throw new Error('Error: uint64 larger than 2^53, JS may lost accuracy');
   }
   let high = 0;
   for (let i = 0; i < 3; i++) {
-    high |= bytes[i] & 0xff;
+    high |= bytes[i]! & 0xff;
     high <<= 8;
   }
-  high |= bytes[3] & 0xff;
+  high |= bytes[3]! & 0xff;
   high = (high & 0x001fffff) * 0x100000000;
-  high += bytes[4] * 0x1000000;
-  high += bytes[5] * 0x10000;
-  high += bytes[6] * 0x100;
-  high += bytes[7] & 0xff;
+  high += bytes[4]! * 0x1000000;
+  high += bytes[5]! * 0x10000;
+  high += bytes[6]! * 0x100;
+  high += bytes[7]! & 0xff;
 
   return high;
 }
@@ -255,9 +255,10 @@ function fast_decrypt(b: Uint8Array, key: Uint8Array): Uint8Array {
   // XOR decryption
   let previous = 0x36;
   for (let i = 0; i < b.length; ++i) {
-    let t = ((b[i] >> 4) | (b[i] << 4)) & 0xff;
-    t = t ^ previous ^ (i & 0xff) ^ key[i % key.length];
-    previous = b[i];
+    const bi = b[i]!;
+    let t = ((bi >> 4) | (bi << 4)) & 0xff;
+    t = t ^ previous ^ (i & 0xff) ^ key[i % key.length]!;
+    previous = bi;
     b[i] = t;
   }
   return b;
@@ -278,10 +279,10 @@ function salsa_decrypt(data: Uint8Array, _k: Uint8Array): Uint8Array {
 function mdxDecrypt(comp_block: Uint8Array): Uint8Array {
   const keyinBuffer = new Uint8Array(8);
   keyinBuffer.set(comp_block.slice(4, 8), 0);
-  keyinBuffer[4] ^= 0x95;
-  keyinBuffer[5] ^= 0x36;
-  keyinBuffer[6] ^= 0x00;
-  keyinBuffer[7] ^= 0x00;
+  keyinBuffer[4] = keyinBuffer[4]! ^ 0x95;
+  keyinBuffer[5] = keyinBuffer[5]! ^ 0x36;
+  keyinBuffer[6] = keyinBuffer[6]! ^ 0x00;
+  keyinBuffer[7] = keyinBuffer[7]! ^ 0x00;
 
   const key = ripemd128(keyinBuffer.buffer.slice(keyinBuffer.byteOffset, keyinBuffer.byteOffset + keyinBuffer.length));
   return concatBytes(
@@ -320,8 +321,8 @@ function wordCompare(word1: string, word2: string) {
   }
   const len = word1.length > word2.length ? word2.length : word1.length;
   for (let i = 0; i < len; i++) {
-    const w1 = word1[i];
-    const w2 = word2[i];
+    const w1 = word1[i]!;
+    const w2 = word2[i]!;
     if (w1 == w2) {
       continue;
       // case1: w1: `H` w2: `h` or `h` and `H`continue
@@ -357,8 +358,11 @@ function substituteStylesheet(
   const txtList = Array.from(txt.split(/`\d+`/g)).slice(1);
   let styledTxt = '';
   for (let i = 0; i < txtList.length; i++) {
-    const style = styleSheet[txtTag[i][1]];
-    styledTxt += style[0] + txtList[i] + style[1];
+    const tag = txtTag[i];
+    if (!tag) continue;
+    const style = styleSheet[tag[1]!];
+    if (!style) continue;
+    styledTxt += style[0]! + txtList[i] + style[1]!;
   }
   return styledTxt;
 }

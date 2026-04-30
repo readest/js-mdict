@@ -45,7 +45,7 @@ function measureMemFn(): Function {
       let last_key_used = 0;
       if (step > 0) {
         last_key_used =
-          Math.round((memoryStack[step - 1][key as keyof NodeJS.MemoryUsage] / 1024 / 1024) * 100) / 100;
+          Math.round((memoryStack[step - 1]![key as keyof NodeJS.MemoryUsage] / 1024 / 1024) * 100) / 100;
       }
       memDatas.push({
         step: step,

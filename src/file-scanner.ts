@@ -9,7 +9,7 @@
  * sync file IO does not exist.
  */
 import { closeSync, openSync, readSync } from 'node:fs';
-import type { Scanner } from './scanner.js';
+import type { Scanner } from './scanner';
 
 export class FileScanner implements Scanner {
   /** Discriminator: callers can branch sync vs async on `scanner.sync`. */

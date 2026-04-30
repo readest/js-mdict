@@ -4,7 +4,7 @@
 //module/cli.js
 
 import fs from 'fs';
-import { MDX, MDD } from './index.js';
+import { MDX, MDD } from './index';
 
 function help() {
   console.log('js-mdict - A MDict dictionary file reader command line tool');
@@ -26,6 +26,12 @@ if (args.length !== 2) {
 
 const src = args[0];
 const target = args[1];
+
+if (!src || !target) {
+  console.log('Error: Requires 2 arguments');
+  help();
+  process.exit();
+}
 
 if (!fs.existsSync(src)) {
   console.log("Error: Source mdx/mdd file doesn't exist. given: ", src);
