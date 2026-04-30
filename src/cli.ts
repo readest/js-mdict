@@ -45,7 +45,7 @@ let result: { keyText: string; definition: null | string } = { keyText: '', defi
 switch (file_extionsion) {
   case 'mdx': {
     const mdx_dict = new MDX(src);
-    const result = mdx_dict.lookup(target);
+    const result = mdx_dict.lookup(target) as { keyText: string; definition: string | null };
     if (result && result.definition) {
       console.log(result.definition);
     } else {
@@ -55,10 +55,10 @@ switch (file_extionsion) {
   }
   case 'mdd': {
     const mdd_dict = new MDD(src);
-    result = mdd_dict.locate(target);
+    result = mdd_dict.locate(target) as { keyText: string; definition: string | null };
     if (result && result.definition) {
       if (result.definition.length > 100) {
-        console.log(result.definition.slice(0, 100) + '...' + '(total: ' + result.definition.length/1024 + ' KB)');
+        console.log(result.definition.slice(0, 100) + '...' + '(total: ' + result.definition.length / 1024 + ' KB)');
       }
     } else {
       console.log('not found');

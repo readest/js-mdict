@@ -18,17 +18,33 @@
 import MdictBase, { KeyWordItem, KeyInfoItem, MDictOptions } from './mdict-base.js';
 import common from './utils.js';
 import lzo1x from './lzo1x-wrapper.js';
-import zlib from 'zlib';
-
-const pako = {
-  inflate: zlib.inflateSync
-};
+import { unzlibSync as inflate } from 'fflate';
+import { bytesToHex } from './byte-utils.js';
+import type { Scanner } from './scanner.js';
 
 export class Mdict extends MdictBase {
 
-  constructor(fname: string, options?: Partial<MDictOptions>) {
-    options = options || {};
-    // default options
+  /**
+   * Construct an Mdict.
+   *
+   *  - `new Mdict(path, options?)`              — legacy API (Node only).
+   *  - `new Mdict(scanner, name, options?)`     — explicit scanner.
+   *
+   * When the scanner is sync (or a path is given, which builds a sync
+   * FileScanner internally), reading happens in the constructor. When the
+   * scanner is async (e.g. {@link BlobScanner}), call `await mdict.init()`
+   * before any lookup.
+   */
+  constructor(input: string | Scanner, nameOrOptions?: string | Partial<MDictOptions>, optionsArg?: Partial<MDictOptions>) {
+    let name: string;
+    let options: Partial<MDictOptions>;
+    if (typeof input === 'string') {
+      name = input;
+      options = (typeof nameOrOptions === 'object' ? nameOrOptions : optionsArg) ?? {};
+    } else {
+      name = typeof nameOrOptions === 'string' ? nameOrOptions : (input as { name?: string }).name ?? 'unknown.mdx';
+      options = optionsArg ?? (typeof nameOrOptions === 'object' ? nameOrOptions : {});
+    }
     options = {
       passcode: options.passcode ?? '',
       debug: options.debug ?? false,
@@ -37,9 +53,8 @@ export class Mdict extends MdictBase {
       isCaseSensitive: options.isCaseSensitive ?? true,
       encryptType: options.encryptType ?? -1,
     };
-
     const passcode = options.passcode || undefined;
-    super(fname, passcode, options);
+    super(input as string | Scanner, name, passcode, options);
   }
 
 
@@ -97,16 +112,26 @@ export class Mdict extends MdictBase {
    *  the finally meaning's buffer is `unpackRecordBlockBuff[start, end]`
    * @param item
    */
-  lookupRecordByKeyBlock(item: KeyWordItem) {
+  /**
+   * Returns the raw record bytes for a key item.
+   *
+   * Sync when the scanner is sync, async otherwise. The TS overload exposes
+   * the sync return type to preserve the legacy API; async-scanner callers
+   * should `await`, which unwraps either kind correctly.
+   */
+  lookupRecordByKeyBlock(item: KeyWordItem): Uint8Array;
+  lookupRecordByKeyBlock(item: KeyWordItem): Uint8Array | Promise<Uint8Array> {
     const recordBlockIndex = this.reduceRecordBlockInfo(item.recordStartOffset);
     const recordBlockInfo = this.recordInfoList[recordBlockIndex];
-    const recordBuffer = this.scanner.readBuffer(this._recordBlockStartOffset + recordBlockInfo.packAccumulateOffset, recordBlockInfo.packSize);
-    const unpackRecordBlockBuff = this.decompressBuff(recordBuffer, recordBlockInfo.unpackSize);
-
+    const offset = this._recordBlockStartOffset + recordBlockInfo.packAccumulateOffset;
     const start = item.recordStartOffset - recordBlockInfo.unpackAccumulatorOffset;
     const end = item.recordEndOffset - recordBlockInfo.unpackAccumulatorOffset;
-
-    return unpackRecordBlockBuff.slice(start, end);
+    const finish = (recordBuffer: Uint8Array): Uint8Array => {
+      const unpacked = this.decompressBuff(recordBuffer, recordBlockInfo.unpackSize);
+      return unpacked.slice(start, end);
+    };
+    const buf = this.scanner.readBuffer(offset, recordBlockInfo.packSize);
+    return buf instanceof Promise ? buf.then(finish) : finish(buf);
   }
 
 
@@ -117,13 +142,17 @@ export class Mdict extends MdictBase {
    * @param {number} keyInfoId key block id
    * @return {KeyWordItem[]}
    */
-  lookupPartialKeyBlockListByKeyInfoId(keyInfoId: number): KeyWordItem[] {
+  lookupPartialKeyBlockListByKeyInfoId(keyInfoId: number): KeyWordItem[];
+  lookupPartialKeyBlockListByKeyInfoId(keyInfoId: number): KeyWordItem[] | Promise<KeyWordItem[]> {
     const packSize = this.keyInfoList[keyInfoId].keyBlockPackSize;
     const unpackSize = this.keyInfoList[keyInfoId].keyBlockUnpackSize;
     const startOffset = this.keyInfoList[keyInfoId].keyBlockPackAccumulator + this._keyBlockStartOffset;
-    const keyBlockPackedBuff = this.scanner.readBuffer(startOffset, packSize);
-    const keyBlock = this.unpackKeyBlock(keyBlockPackedBuff, unpackSize);
-    return this.splitKeyBlock(keyBlock, keyInfoId);
+    const finish = (keyBlockPackedBuff: Uint8Array): KeyWordItem[] => {
+      const keyBlock = this.unpackKeyBlock(keyBlockPackedBuff, unpackSize);
+      return this.splitKeyBlock(keyBlock, keyInfoId);
+    };
+    const buf = this.scanner.readBuffer(startOffset, packSize);
+    return buf instanceof Promise ? buf.then(finish) : finish(buf);
   }
 
 
@@ -159,7 +188,7 @@ export class Mdict extends MdictBase {
   private decompressBuff(recordBuffer: Uint8Array, unpackSize: number) {
     // decompress
     // 4 bytes: compression type
-    const rbCompType = Buffer.from(recordBuffer.subarray(0, 4));
+    const rbCompTypeHex = bytesToHex(recordBuffer, 4);
     // record_block stores the final record data
     let unpackRecordBlockBuff: Uint8Array = new Uint8Array(recordBuffer.length);
 
@@ -167,31 +196,24 @@ export class Mdict extends MdictBase {
     // Note: here ignore the checksum part
     // bytes: adler32 checksum of decompressed record block
     // adler32 = unpack('>I', record_block_compressed[4:8])[0]
-    if (rbCompType.toString('hex') === '00000000') {
+    if (rbCompTypeHex === '00000000') {
       unpackRecordBlockBuff = recordBuffer.slice(8);
     } else {
       // decrypt
       let blockBufDecrypted: Uint8Array | null = null;
       // if encrypt type == 1, the record block was encrypted
       if (this.meta.encrypt === 1 /* || (this.meta.ext == "mdd" && this.meta.encrypt === 2 ) */) {
-        // const passkey = new Uint8Array(8);
-        // record_block_compressed.copy(passkey, 0, 4, 8);
-        // passkey.set([0x95, 0x36, 0x00, 0x00], 4); // key part 2: fixed data
         blockBufDecrypted = common.mdxDecrypt(recordBuffer);
       } else {
         blockBufDecrypted = recordBuffer.subarray(8, recordBuffer.length);
       }
 
       // decompress
-      if (rbCompType.toString('hex') === '01000000') {
+      if (rbCompTypeHex === '01000000') {
         unpackRecordBlockBuff = lzo1x.decompress(blockBufDecrypted, unpackSize, 1308672);
-        unpackRecordBlockBuff = Buffer.from(unpackRecordBlockBuff).subarray(
-          unpackRecordBlockBuff.byteOffset,
-          unpackRecordBlockBuff.byteOffset + unpackRecordBlockBuff.byteLength
-        );
-      } else if (rbCompType.toString('hex') === '02000000') {
+      } else if (rbCompTypeHex === '02000000') {
         // zlib decompress
-        unpackRecordBlockBuff = Buffer.from(pako.inflate(blockBufDecrypted));
+        unpackRecordBlockBuff = inflate(blockBufDecrypted);
       }
     }
     return unpackRecordBlockBuff;

@@ -19,13 +19,21 @@
   "homepage": "https://github.com/terasum/js-mdict#readme",
   "type": "module",
   "exports": {
-    "require": "./dist/cjs/index.js",
-    "import": "./dist/esm/index.js"
+    ".": {
+      "types": "./dist/cjs/index.d.ts",
+      "require": "./dist/cjs/index.js",
+      "import": "./dist/esm/index.js"
+    },
+    "./file-scanner": {
+      "types": "./dist/cjs/file-scanner.d.ts",
+      "require": "./dist/cjs/file-scanner.js",
+      "import": "./dist/esm/file-scanner.js"
+    }
   },
   "main": "./dist/cjs/index.js",
   "types": "./dist/cjs/index.d.ts",
   "engines": {
-    "node": ">=10.20.0"
+    "node": ">=18.0.0"
   },
   "scripts": {
     "prepareBuild": "shx mkdir -p dist/{cjs,esm}",
@@ -47,6 +55,7 @@
   },
   "dependencies": {
     "commander": "^13.0.0",
+    "fflate": "^0.8.2",
     "levenshtein-edit-distance": "^3.0.1"
   },
   "devDependencies": {

@@ -20,6 +20,8 @@ export default {
     '^./index.js$': '<rootDir>/src/index.ts',
     '^./mdd.js$': '<rootDir>/src/mdd.ts',
     '^./scanner.js$': '<rootDir>/src/scanner.ts',
+    '^./file-scanner.js$': '<rootDir>/src/file-scanner.ts',
+    '^./byte-utils.js$': '<rootDir>/src/byte-utils.ts',
 
   },
   preset: 'ts-jest',

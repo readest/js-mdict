@@ -1,12 +1,28 @@
-import assert from 'assert';
 import lzo1x from './lzo1x-wrapper.js';
 import common, { NumFmt } from './utils.js';
-import { FileScanner } from './scanner.js';
-import zlib from 'zlib';
+import type { Scanner } from './scanner.js';
+import { assert, bytesToHex } from './byte-utils.js';
+import { unzlibSync as inflate } from 'fflate';
 
-const pako = {
-  inflate: zlib.inflateSync,
-};
+// Lazy CJS require so the main entry stays free of `node:fs`. Only resolved
+// when a caller passes a path string to the constructor (legacy API).
+declare function require(mod: string): { FileScanner: new (path: string) => Scanner };
+let _FileScanner: (new (path: string) => Scanner) | null = null;
+function loadFileScannerCtor(): new (path: string) => Scanner {
+  if (_FileScanner) return _FileScanner;
+  try {
+    if (typeof require === 'function') {
+      _FileScanner = require('./file-scanner.js').FileScanner;
+      if (_FileScanner) return _FileScanner;
+    }
+  } catch { /* fall through to error below */ }
+  throw new Error(
+    'Constructing MDX/MDD with a file path requires a Node CJS context. ' +
+    'In ESM or browser code, pass a Scanner explicitly: ' +
+    'import { FileScanner } from "js-mdict/file-scanner"; ' +
+    'new MDX(new FileScanner(path), path).'
+  );
+}
 
 const UTF_16LE_DECODER = new TextDecoder('utf-16le');
 const UTF16 = 'UTF-16';
@@ -121,7 +137,7 @@ export class MdictMeta {
  */
 class MDictBase {
   // 文件扫描
-  protected scanner: FileScanner;
+  protected scanner: Scanner;
 
   // mdx meta
   meta: MdictMeta = new MdictMeta();
@@ -206,19 +222,51 @@ class MDictBase {
 
   /**
    * mdict constructor
-   * @param {string} fname
-   * @param {string} passcode
-   * @param options
+   *
+   * Three input shapes are supported:
+   *
+   *  1. `new Mdict(path: string, options?)` — legacy API. Internally builds a
+   *     Node {@link FileScanner} and reads the dictionary synchronously, so
+   *     `lookup()` is sync. Requires CJS Node context.
+   *  2. `new Mdict(scanner: SyncScanner, name: string, options?)` — explicit
+   *     sync scanner (e.g. a custom in-memory implementation). Reads sync in
+   *     the constructor; `lookup()` is sync.
+   *  3. `new Mdict(scanner: AsyncScanner, name: string, options?)` — async
+   *     scanner (e.g. {@link BlobScanner}). Constructor returns immediately;
+   *     caller MUST `await mdict.init()` before any lookup, and lookups
+   *     return Promises.
+   *
+   * The async path is the browser-friendly path. Use {@link MDX.create} /
+   * {@link MDD.create} as a convenience factory that constructs +
+   * `init()`s in one step.
    */
-  constructor(fname: string, passcode?: string, options?: Partial<MDictOptions>) {
+  constructor(input: string | Scanner, nameOrPasscode?: string, passcodeOrOptions?: string | Partial<MDictOptions>, optionsOrUndefined?: Partial<MDictOptions>) {
+    // Untangle the overloaded args.
+    let scanner: Scanner;
+    let name: string;
+    let passcode: string | undefined;
+    let options: Partial<MDictOptions> | undefined;
+    if (typeof input === 'string') {
+      // Legacy: input is a file path. Build a Node FileScanner.
+      const FileScanner = loadFileScannerCtor();
+      scanner = new FileScanner(input);
+      name = input;
+      passcode = typeof nameOrPasscode === 'string' ? nameOrPasscode : undefined;
+      options = (passcodeOrOptions as Partial<MDictOptions> | undefined) ?? (typeof nameOrPasscode === 'object' ? nameOrPasscode : undefined);
+    } else {
+      scanner = input;
+      name = nameOrPasscode ?? (input as { name?: string }).name ?? 'unknown.mdx';
+      passcode = typeof passcodeOrOptions === 'string' ? passcodeOrOptions : undefined;
+      options = optionsOrUndefined ?? (typeof passcodeOrOptions === 'object' ? passcodeOrOptions : undefined);
+    }
     // the mdict file name
-    this.meta.fname = fname;
+    this.meta.fname = name;
     // the dictionary file decrypt pass code
     this.meta.passcode = passcode;
     // the dictionary file extension
-    this.meta.ext = common.getExtension(fname, 'mdx');
+    this.meta.ext = common.getExtension(name, 'mdx');
     // the file scanner
-    this.scanner = new FileScanner(fname);
+    this.scanner = scanner;
 
     // set options
     this.options = options ?? {
@@ -308,7 +356,33 @@ class MDictBase {
     this._recordBlockEndOffset = 0;
     this.recordBlockDataList = [];
 
-    this.readDict();
+    // Sync scanners (FileScanner and any custom impl that sets `sync: true`)
+    // can read the dictionary right now, preserving the legacy sync API.
+    // Async scanners (BlobScanner) must be awaited via init().
+    if (this.scanner.sync) {
+      this.readDictSync();
+      this._initialized = true;
+    }
+  }
+
+  /** True once the dictionary has been read. */
+  protected _initialized = false;
+
+  /**
+   * Initialize the dictionary by reading header, key info, and record info.
+   *
+   * Must be awaited before any lookup when constructed with an async
+   * scanner. Idempotent: calling twice is a no-op. Calling on a sync-scanner
+   * instance is also a no-op (the constructor already initialized it).
+   */
+  async init(): Promise<void> {
+    if (this._initialized) return;
+    if (this.scanner.sync) {
+      this.readDictSync();
+    } else {
+      await this.readDictAsync();
+    }
+    this._initialized = true;
   }
 
   strip(key: string): string {
@@ -413,28 +487,44 @@ class MDictBase {
   private _isStripKey(): boolean {
     return this.options.isStripKey || common.isTrue(this.header['StripKey'] as string);
   }
-  public readDict() {
+  /** @deprecated use {@link init} (async) or {@link readDictSync} (sync). */
+  public async readDict() {
+    if (this.scanner.sync) this.readDictSync();
+    else await this.readDictAsync();
+  }
+
+  public readDictSync(): void {
+    this._readHeaderSync();
+    this._readKeyHeaderSync();
+    this._readKeyInfosSync();
+    this._readKeyBlocksSync();
+    this._readRecordHeaderSync();
+    this._readRecordInfosSync();
+    this.keywordList.sort((ki1, ki2) => ki1.keyText.localeCompare(ki2.keyText));
+  }
+
+  public async readDictAsync(): Promise<void> {
     // STEP1: read header
-    this._readHeader();
+    await this._readHeader();
 
     // STEP2: read key header
-    this._readKeyHeader();
+    await this._readKeyHeader();
 
     // STEP3: read key block info
-    this._readKeyInfos();
+    await this._readKeyInfos();
 
     // STEP4: read key block
     // @depreciated
     // _readKeyBlock method is very slow, avoid invoke dirctly
     // this method will return the whole words list of the dictionaries file, this is very slow
     // NOTE: 本方法非常缓慢，也有可能导致内存溢出，请不要直接调用
-    this._readKeyBlocks();
+    await this._readKeyBlocks();
 
     // STEP5: read record header
-    this._readRecordHeader();
+    await this._readRecordHeader();
 
     // STEP6: read record block info
-    this._readRecordInfos();
+    await this._readRecordInfos();
 
     // STEP7: read record block
     // _readRecordBlock method is very slow, avoid invoke directly
@@ -509,15 +599,36 @@ class MDictBase {
    * assert(zlib.adler32(header_bytes) & 0xffffffff, adler32)
    *
    */
-  private _readHeader() {
+  /**
+   * Synchronously read `length` bytes at `offset`. Throws if the underlying
+   * scanner is async — only valid on sync scanners (e.g. {@link FileScanner}).
+   */
+  protected _readBufferSync(offset: number | bigint, length: number): Uint8Array {
+    const r = this.scanner.readBuffer(offset, length);
+    if (r instanceof Promise) {
+      throw new Error('Async scanner cannot be read synchronously. Call init() and await it instead.');
+    }
+    return r;
+  }
+
+  private async _readHeader() {
     // [0:4], 4 bytes header length (header_byte_size), big-endian, 4 bytes, 16 bits
-    const headerByteSizeBuff = this.scanner.readBuffer(0, 4);
+    const headerByteSizeBuff = await this.scanner.readBuffer(0, 4);
     const headerByteSize = common.b2n(headerByteSizeBuff);
 
     // [4:header_byte_size + 4] header_bytes
-    const headerBuffer = this.scanner.readBuffer(4, headerByteSize);
+    const headerBuffer = await this.scanner.readBuffer(4, headerByteSize);
+    this._processHeader(headerByteSize, headerBuffer);
+  }
 
+  private _readHeaderSync() {
+    const headerByteSizeBuff = this._readBufferSync(0, 4);
+    const headerByteSize = common.b2n(headerByteSizeBuff);
+    const headerBuffer = this._readBufferSync(4, headerByteSize);
+    this._processHeader(headerByteSize, headerBuffer);
+  }
 
+  private _processHeader(headerByteSize: number, headerBuffer: Uint8Array): void {
     // TODO: SKIP 4 bytes alder32 checksum
     // header_b_cksum should skip for now, because cannot get alder32 sum by js
     // const header_b_cksum = readChunk.sync(this.meta.fname, header_byte_size + 4, 4);
@@ -609,25 +720,30 @@ class MDictBase {
    * STEP 2. read key block header
    * read key block header
    */
-  private _readKeyHeader() {
-    // header info struct:
-    // [0:8]/[0:4]   - number of key blocks
-    // [8:16]/[4:8]  - number of entries
-    // [16:24]/[8:12] - key block info decompressed size (if version >= 2.0, else not exist)
-    // [24:32]/null - key block info size
-    // [32:40]/[12:16] - key block size
-    // note: if version <2.0, the key info buffer size is 4 * 4
-    //       otherwise, ths key info buffer size is 5 * 8
-    // <2.0  the order of number is same
-
-    // set offset
+  private async _readKeyHeader() {
     this._keyHeaderStartOffset = this._headerEndOffset;
-
-    // version >= 2.0, key_header bytes number is 5 * 8, otherwise, 4 * 4
     const headerMetaSize = this.meta.version >= 2.0 ? 8 * 5 : 4 * 4;
-    // const keyHeaderBuff = this._readBuffer(this._keyHeaderStartOffset, bytesNum);
-    const keyHeaderBuff = this.scanner.readBuffer(this._keyHeaderStartOffset, headerMetaSize);
+    const keyHeaderBuff = await this.scanner.readBuffer(this._keyHeaderStartOffset, headerMetaSize);
+    this._processKeyHeader(keyHeaderBuff, headerMetaSize);
+  }
 
+  private _readKeyHeaderSync() {
+    this._keyHeaderStartOffset = this._headerEndOffset;
+    const headerMetaSize = this.meta.version >= 2.0 ? 8 * 5 : 4 * 4;
+    const keyHeaderBuff = this._readBufferSync(this._keyHeaderStartOffset, headerMetaSize);
+    this._processKeyHeader(keyHeaderBuff, headerMetaSize);
+  }
+
+  /**
+   * STEP 2 (parse). header info struct:
+   * [0:8]/[0:4]   - number of key blocks
+   * [8:16]/[4:8]  - number of entries
+   * [16:24]/[8:12] - key block info decompressed size (if version >= 2.0, else not exist)
+   * [24:32]/null - key block info size
+   * [32:40]/[12:16] - key block size
+   * note: if version <2.0, the key info buffer size is 4 * 4, otherwise 5 * 8.
+   */
+  private _processKeyHeader(keyHeaderBuff: Uint8Array, headerMetaSize: number): void {
     // decrypt
     if (this.meta.encrypt & 1) {
       if (!this.meta.passcode || this.meta.passcode == '') {
@@ -686,10 +802,19 @@ class MDictBase {
    * read key block info
    * key block info list
    */
-  private _readKeyInfos() {
+  private async _readKeyInfos() {
     this._keyBlockInfoStartOffset = this._keyHeaderEndOffset;
-    const keyBlockInfoBuff = this.scanner.readBuffer(this._keyBlockInfoStartOffset, this.keyHeader.keyInfoPackedSize);
+    const buf = await this.scanner.readBuffer(this._keyBlockInfoStartOffset, this.keyHeader.keyInfoPackedSize);
+    this._processKeyInfos(buf);
+  }
 
+  private _readKeyInfosSync() {
+    this._keyBlockInfoStartOffset = this._keyHeaderEndOffset;
+    const buf = this._readBufferSync(this._keyBlockInfoStartOffset, this.keyHeader.keyInfoPackedSize);
+    this._processKeyInfos(buf);
+  }
+
+  private _processKeyInfos(keyBlockInfoBuff: Uint8Array): void {
     const keyBlockInfoList = this._decodeKeyInfo(keyBlockInfoBuff);
 
     this._keyBlockInfoEndOffset = this._keyBlockInfoStartOffset + this.keyHeader.keyInfoPackedSize;
@@ -729,7 +854,7 @@ class MDictBase {
       if (this.meta.version >= 2.0 && packType == '2000') {
         // For version 2.0, will compress by zlib, lzo just for 1.0
       // key_block_info_compressed[0:8] => compress_type
-        const keyInfoBuffUnpacked = zlib.inflateSync(keyInfoBuff.slice(8));
+        const keyInfoBuffUnpacked = inflate(keyInfoBuff.slice(8));
 
         // TODO: check the alder32 checksum
         // adler32 = unpack('>I', key_block_info_compressed[4:8])[0]
@@ -852,28 +977,27 @@ class MDictBase {
    */
   protected unpackKeyBlock(kbPackedBuff: Uint8Array, unpackSize: number) {
     //  4 bytes : compression type
-    const compType = Buffer.from(kbPackedBuff.slice(0, 4));
+    const compTypeHex = bytesToHex(kbPackedBuff, 4);
 
     // TODO 4 bytes adler32 checksum
     // 4 bytes : adler checksum of decompressed key block
     // adler32 = unpack('>I', key_block_compressed[start + 4:start + 8])[0]
 
     let keyBlock: Uint8Array;
-    if (compType.toString('hex') == '00000000') {
+    if (compTypeHex == '00000000') {
       keyBlock = kbPackedBuff.slice(8);
-    } else if (compType.toString('hex') == '01000000') {
+    } else if (compTypeHex == '01000000') {
       // TODO: tests for v2.0 dictionary
-      const decompressedBuff = lzo1x.decompress(kbPackedBuff.slice(8), unpackSize, 0);
-      keyBlock = Buffer.from(decompressedBuff);
-    } else if (compType.toString('hex') === '02000000') {
-      keyBlock = Buffer.from(pako.inflate(kbPackedBuff.slice(8)));
+      keyBlock = lzo1x.decompress(kbPackedBuff.slice(8), unpackSize, 0);
+    } else if (compTypeHex === '02000000') {
+      keyBlock = inflate(kbPackedBuff.slice(8));
       // extract one single key block into a key list
 
       // notice that adler32 returns signed value
       // TODO compare with previous word
       // assert(adler32 == zlib.adler32(key_block) & 0xffffffff)
     } else {
-      throw Error(`cannot determine the compress type: ${compType.toString('hex')}`);
+      throw Error(`cannot determine the compress type: ${compTypeHex}`);
     }
 
     return keyBlock;
@@ -884,42 +1008,46 @@ class MDictBase {
    * decode key block return the total keys list,
    * Note: this method runs very slow, please do not use this unless special target
    */
-  private _readKeyBlocks() {
+  private async _readKeyBlocks() {
     this._keyBlockStartOffset = this._keyBlockInfoEndOffset;
+    const blocks: Uint8Array[] = [];
+    for (const info of this.keyInfoList) {
+      const start = this._keyBlockStartOffset + info.keyBlockPackAccumulator;
+      blocks.push(await this.scanner.readBuffer(start, info.keyBlockPackSize));
+    }
+    this._processKeyBlocks(blocks);
+  }
 
+  private _readKeyBlocksSync() {
+    this._keyBlockStartOffset = this._keyBlockInfoEndOffset;
+    const blocks: Uint8Array[] = [];
+    for (const info of this.keyInfoList) {
+      const start = this._keyBlockStartOffset + info.keyBlockPackAccumulator;
+      blocks.push(this._readBufferSync(start, info.keyBlockPackSize));
+    }
+    this._processKeyBlocks(blocks);
+  }
+
+  private _processKeyBlocks(blocks: Uint8Array[]): void {
     let keyBlockList: KeyWordItem[] = [];
-    let kbStartOffset = this._keyBlockStartOffset;
-
     for (let idx = 0; idx < this.keyInfoList.length; idx++) {
-      const packSize = this.keyInfoList[idx].keyBlockPackSize;
       const unpackSize = this.keyInfoList[idx].keyBlockUnpackSize;
-
-      const start = kbStartOffset;
-      assert(start === this.keyInfoList[idx].keyBlockPackAccumulator + this._keyBlockStartOffset, 'should be equal');
-
-      // const end = kbStartOffset + compSize;
-      const kbCompBuff = this.scanner.readBuffer(start, packSize);
-      const keyBlock = this.unpackKeyBlock(kbCompBuff, unpackSize);
-
-      const splitKeyBlock = this.splitKeyBlock(Buffer.from(keyBlock), idx);
+      const keyBlock = this.unpackKeyBlock(blocks[idx], unpackSize);
+      const splitKeyBlock = this.splitKeyBlock(keyBlock, idx);
       if (keyBlockList.length > 0 && keyBlockList[keyBlockList.length - 1].recordEndOffset == -1) {
         keyBlockList[keyBlockList.length - 1].recordEndOffset = splitKeyBlock[0].recordStartOffset;
       }
       keyBlockList = keyBlockList.concat(splitKeyBlock);
-      kbStartOffset += packSize;
     }
     if (keyBlockList[keyBlockList.length - 1].recordEndOffset === -1) {
-      keyBlockList[keyBlockList.length - 1].recordEndOffset = -1; // the latest one
+      keyBlockList[keyBlockList.length - 1].recordEndOffset = -1;
     }
     assert(
       keyBlockList.length === this.keyHeader.keywordNum,
       `key list length: ${keyBlockList.length} should equal to key entries num: ${this.keyHeader.keywordNum}`
     );
     this._keyBlockEndOffset = this._keyBlockStartOffset + this.keyHeader.keywordBlockPackedSize;
-
-    // keep keyBlockList in memory
     this.keywordList = keyBlockList;
-
   }
 
   /**
@@ -931,14 +1059,23 @@ class MDictBase {
    * [16:24/8:12] - record block info size
    * [24:32/12:16] - record block size
    */
-  private _readRecordHeader(): void {
+  private async _readRecordHeader(): Promise<void> {
     this._recordHeaderStartOffset = this._keyBlockInfoEndOffset + this.keyHeader.keywordBlockPackedSize;
-
     const recordHeaderLen = this.meta.version >= 2.0 ? 4 * 8 : 4 * 4;
     this._recordHeaderEndOffset = this._recordHeaderStartOffset + recordHeaderLen;
+    const recordHeaderBuffer = await this.scanner.readBuffer(this._recordHeaderStartOffset, recordHeaderLen);
+    this._processRecordHeader(recordHeaderBuffer);
+  }
 
-    const recordHeaderBuffer = this.scanner.readBuffer(this._recordHeaderStartOffset, recordHeaderLen);
+  private _readRecordHeaderSync(): void {
+    this._recordHeaderStartOffset = this._keyBlockInfoEndOffset + this.keyHeader.keywordBlockPackedSize;
+    const recordHeaderLen = this.meta.version >= 2.0 ? 4 * 8 : 4 * 4;
+    this._recordHeaderEndOffset = this._recordHeaderStartOffset + recordHeaderLen;
+    const recordHeaderBuffer = this._readBufferSync(this._recordHeaderStartOffset, recordHeaderLen);
+    this._processRecordHeader(recordHeaderBuffer);
+  }
 
+  private _processRecordHeader(recordHeaderBuffer: Uint8Array): void {
     let ofset = 0;
     const recordBlocksNum = common.b2n(recordHeaderBuffer.slice(ofset, ofset + this.meta.numWidth));
 
@@ -965,20 +1102,24 @@ class MDictBase {
    * STEP 6.
    * decode record Info,
    */
-  private _readRecordInfos(): void {
+  private async _readRecordInfos(): Promise<void> {
     this._recordInfoStartOffset = this._recordHeaderEndOffset;
+    const buf = await this.scanner.readBuffer(this._recordInfoStartOffset, this.recordHeader.recordInfoCompSize);
+    this._processRecordInfos(buf);
+  }
 
-    const recordInfoBuff = this.scanner.readBuffer(this._recordInfoStartOffset, this.recordHeader.recordInfoCompSize);
-    /**
-     * record_block_info_list:
-     * [{
-     *   packSize: number
-     *   packAccumulateOffset: number
-     *   unpackSize: number,
-     *   unpackAccumulatorOffset: number
-     * }]
-     * Note: every record block will contain a lot of entries
-     */
+  private _readRecordInfosSync(): void {
+    this._recordInfoStartOffset = this._recordHeaderEndOffset;
+    const buf = this._readBufferSync(this._recordInfoStartOffset, this.recordHeader.recordInfoCompSize);
+    this._processRecordInfos(buf);
+  }
+
+  /**
+   * STEP 6 (parse). record_block_info_list entries each have:
+   *   { packSize, packAccumulateOffset, unpackSize, unpackAccumulatorOffset }
+   * Every record block will contain many key entries.
+   */
+  private _processRecordInfos(recordInfoBuff: Uint8Array): void {
     const recordInfoList: RecordInfo[] = [];
     let offset = 0;
     let compressedAdder = 0;
@@ -1018,7 +1159,7 @@ class MDictBase {
    * read all records block,
    * this is a slow method, do not use!
    */
-  public _readRecordBlocks(): void {
+  public async _readRecordBlocks(): Promise<void> {
     this._recordBlockStartOffset = this._recordInfoEndOffset;
     const keyData: any[] = [];
 
@@ -1034,11 +1175,11 @@ class MDictBase {
       let compressType = 'none';
       const packSize = this.recordInfoList[idx].packSize;
       const unpackSize = this.recordInfoList[idx].unpackSize;
-      const rbPackBuff = this.scanner.readBuffer(recordOffset, packSize);
+      const rbPackBuff = await this.scanner.readBuffer(recordOffset, packSize);
       recordOffset += packSize;
 
       // 4 bytes: compression type
-      const rbCompType = Buffer.from(rbPackBuff.slice(0, 4));
+      const rbCompTypeHex = bytesToHex(rbPackBuff, 4);
 
       // record_block stores the final record data
       let recordBlock: Uint8Array = new Uint8Array(rbPackBuff.length);
@@ -1047,16 +1188,13 @@ class MDictBase {
       // Note: here ignore the checksum part
       // bytes: adler32 checksum of decompressed record block
       // adler32 = unpack('>I', record_block_compressed[4:8])[0]
-      if (rbCompType.toString('hex') === '00000000') {
+      if (rbCompTypeHex === '00000000') {
         recordBlock = rbPackBuff.slice(8, rbPackBuff.length);
       } else {
         // decrypt
         let blockBufDecrypted: Uint8Array | null = null;
         // if encrypt type == 1, the record block was encrypted
         if (this.meta.encrypt === 1 /* || (this.meta.ext == "mdd" && this.meta.encrypt === 2 ) */) {
-          // const passkey = new Uint8Array(8);
-          // record_block_compressed.copy(passkey, 0, 4, 8);
-          // passkey.set([0x95, 0x36, 0x00, 0x00], 4); // key part 2: fixed data
           blockBufDecrypted = common.mdxDecrypt(rbPackBuff);
         } else {
           blockBufDecrypted = rbPackBuff.slice(8, rbPackBuff.length);
@@ -1064,25 +1202,13 @@ class MDictBase {
         // --------------
         // decompress
         // --------------
-        if (rbCompType.toString('hex') === '01000000') {
+        if (rbCompTypeHex === '01000000') {
           compressType = 'lzo';
-          // the header was needed by lzo library, should append before real compressed data
-          // const header = Buffer.from([0xf0, decompSize]);
-          // Note: if use lzo, here will LZO_E_OUTPUT_RUNOVER, so ,use mini lzo js
-          // recordBlock = Buffer.from(
-          // lzo1x.decompress(common.appendBuffer(header, blockBufDecrypted), decompSize, 1308672)
-          // );
-          recordBlock = Buffer.from(
-            lzo1x.decompress(blockBufDecrypted, unpackSize, 0)
-          );
-          recordBlock = Buffer.from(recordBlock).slice(
-            recordBlock.byteOffset,
-            recordBlock.byteOffset + recordBlock.byteLength
-          );
-        } else if (rbCompType.toString('hex') === '02000000') {
+          recordBlock = lzo1x.decompress(blockBufDecrypted, unpackSize, 0);
+        } else if (rbCompTypeHex === '02000000') {
           compressType = 'zlib';
           // zlib decompress
-          recordBlock = Buffer.from(pako.inflate(blockBufDecrypted));
+          recordBlock = inflate(blockBufDecrypted);
         }
       }
 

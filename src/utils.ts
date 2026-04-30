@@ -1,4 +1,5 @@
 import { ripemd128 } from './ripemd128.js';
+import { concatBytes } from './byte-utils.js';
 
 const REGEXP_STRIPKEY: { [key: string]: RegExp } = {
   mdx: /[().,\-&、 '/\\@_$\\!]()/g,
@@ -10,24 +11,16 @@ const UTF_16LE_DECODER = new TextDecoder('utf-16le');
 const UTF16 = 'UTF-16';
 
 /**
- * 从给定的 Buffer 创建一个新的 Uint8Array。
- * @param {Buffer} buf - 源 Buffer。
- * @param {number} offset - 开始偏移量。
- * @param {number} len - 要复制的长度。
- * @returns {Uint8Array} 新创建的 Uint8Array。
+ * 从给定的 Uint8Array 创建一个共享底层缓冲的新 Uint8Array 视图。
  */
-function newUint8Array(buf: Buffer, offset: number, len: number): Uint8Array {
+function newUint8Array(buf: Uint8Array, offset: number, len: number): Uint8Array {
   return new Uint8Array(buf.buffer, buf.byteOffset + offset, len);
 }
 
 /**
- * 从 Buffer 中读取 UTF-16 编码的字符串。
- * @param {Buffer} buf - 包含 UTF-16 编码数据的 Buffer。
- * @param {number} offset - 开始读取的偏移量。
- * @param {number} length - 要读取的字节长度。
- * @returns {string} 解码后的 UTF-16 字符串。
+ * 从 Uint8Array 中读取 UTF-16 编码的字符串。
  */
-function readUTF16(buf: Buffer, offset: number, length: number): string {
+function readUTF16(buf: Uint8Array, offset: number, length: number): string {
   return UTF_16LE_DECODER.decode(newUint8Array(buf, offset, length));
 }
 
@@ -202,21 +195,17 @@ export type NumFmt =
   | typeof NUMFMT_UINT64;
 
 /**
- * 从 Buffer 中读取指定格式的数字。
- * @param {Buffer} bf - 要读取的 BufferList。
- * @param {Symbol} numfmt - 数字格式(NUMFMT_UINT8, NUMFMT_UINT16, NUMFMT_UINT32, NUMFMT_UINT64)。
- * @returns {number} 读取的数字。
+ * 从字节数组中读取指定格式的数字。
  */
-function readNumber(bf: Buffer, numfmt: NumFmt): number {
-  const value = new Uint8Array(bf);
+function readNumber(bf: Uint8Array, numfmt: NumFmt): number {
   if (numfmt === NUMFMT_UINT32) {
-    return uint32BEtoNumber(value);
+    return uint32BEtoNumber(bf);
   } else if (numfmt === NUMFMT_UINT64) {
-    return uint64BEtoNumber(value);
+    return uint64BEtoNumber(bf);
   } else if (numfmt === NUMFMT_UINT16) {
-    return uint16BEtoNumber(value);
+    return uint16BEtoNumber(bf);
   } else if (numfmt === NUMFMT_UINT8) {
-    return uint8BEtoNumber(value);
+    return uint8BEtoNumber(bf);
   }
   return 0;
 }
@@ -274,7 +263,7 @@ function fast_decrypt(b: Uint8Array, key: Uint8Array): Uint8Array {
   return b;
 }
 
-function salsa_decrypt(data: Buffer, k: Buffer): Buffer {
+function salsa_decrypt(data: Uint8Array, _k: Uint8Array): Uint8Array {
   // salsa20 (8 rounds) decryption
   // TODO
   // s20 = Salsa20(key=encrypt_key, IV=b"\x00"*8, rounds=8)
@@ -285,8 +274,6 @@ function salsa_decrypt(data: Buffer, k: Buffer): Buffer {
 
 /**
  * 解密 MDX 格式的压缩块。
- * @param {Buffer} comp_block - 压缩的 MDX 块。
- * @returns {BufferList} 解密后的数据。
  */
 function mdxDecrypt(comp_block: Uint8Array): Uint8Array {
   const keyinBuffer = new Uint8Array(8);
@@ -297,24 +284,18 @@ function mdxDecrypt(comp_block: Uint8Array): Uint8Array {
   keyinBuffer[7] ^= 0x00;
 
   const key = ripemd128(keyinBuffer.buffer.slice(keyinBuffer.byteOffset, keyinBuffer.byteOffset + keyinBuffer.length));
-  const resultBuff = Buffer.concat([
-    Buffer.from(comp_block.subarray(0, 8)),
-    Buffer.from(fast_decrypt(Uint8Array.from(comp_block.slice(8)), key)),
-  ]);
-  return resultBuff;
+  return concatBytes(
+    comp_block.subarray(0, 8),
+    fast_decrypt(Uint8Array.from(comp_block.slice(8)), key),
+  );
 }
 
-/**
- * 将两个 ArrayBuffer 连接成一个新的 ArrayBuffer。
- * @param {ArrayBuffer} buffer1 - 第一个 ArrayBuffer。
- * @param {ArrayBuffer} buffer2 - 第二个 ArrayBuffer。
- * @returns {ArrayBuffer} 连接后的新 ArrayBuffer。
- */
-function appendBuffer(buffer1: ArrayBuffer, buffer2: ArrayBuffer): Buffer {
+/** Concatenate two ArrayBuffers into a Uint8Array. */
+function appendBuffer(buffer1: ArrayBuffer, buffer2: ArrayBuffer): Uint8Array {
   const tmp = new Uint8Array(buffer1.byteLength + buffer2.byteLength);
   tmp.set(new Uint8Array(buffer1), 0);
   tmp.set(new Uint8Array(buffer2), buffer1.byteLength);
-  return Buffer.from(tmp.buffer);
+  return tmp;
 }
 
 /**
