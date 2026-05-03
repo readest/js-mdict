@@ -6,13 +6,38 @@ import { unzlibSync as inflate } from 'fflate';
 
 // Lazy CJS require so the main entry stays free of `node:fs`. Only resolved
 // when a caller passes a path string to the constructor (legacy API).
-declare function require(mod: string): { FileScanner: new (path: string) => Scanner };
+//
+// We deliberately avoid a literal `require('./file-scanner.js')` because
+// webpack/turbopack/etc. statically scan every `require(...)` call and would
+// emit a "Module not found" warning when consumers depend on this package
+// via TS sources (where `file-scanner.js` doesn't exist as a sibling — only
+// `file-scanner.ts` does, and the warning fires before extension fallback).
+//
+// `__non_webpack_require__` is webpack's documented escape hatch: webpack
+// rewrites it to the runtime require and skips static analysis. In
+// non-webpack Node CJS we fall through to a direct `eval` of `require` —
+// direct eval inherits the calling module's scope, so module-relative
+// resolution still works, and the literal `require(...)` token never
+// appears in source for any other bundler to scan either.
+declare const __non_webpack_require__: ((mod: string) => { FileScanner: new (path: string) => Scanner }) | undefined;
+type FileScannerModule = { FileScanner: new (path: string) => Scanner };
 let _FileScanner: (new (path: string) => Scanner) | null = null;
 function loadFileScannerCtor(): new (path: string) => Scanner {
   if (_FileScanner) return _FileScanner;
   try {
-    if (typeof require === 'function') {
-      _FileScanner = require('./file-scanner.js').FileScanner;
+    let cjsRequire: ((mod: string) => FileScannerModule) | null = null;
+    if (typeof __non_webpack_require__ === 'function') {
+      cjsRequire = __non_webpack_require__;
+    } else {
+      try {
+        // eslint-disable-next-line no-eval
+        cjsRequire = eval('typeof require === "function" ? require : null');
+      } catch {
+        cjsRequire = null;
+      }
+    }
+    if (cjsRequire) {
+      _FileScanner = cjsRequire('./file-scanner.js').FileScanner;
       if (_FileScanner) return _FileScanner;
     }
   } catch { /* fall through to error below */ }
